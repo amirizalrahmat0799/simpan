@@ -1,0 +1,16 @@
+services:
+  simpan:
+    build: .
+    image: simpan:latest
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # /actuator/health, /actuator/prometheus
+    environment:
+      SIMPAN_ACCESS_KEY: ${SIMPAN_ACCESS_KEY:-simpanadmin}
+      SIMPAN_SECRET_KEY: ${SIMPAN_SECRET_KEY:-change-me-please}
+    volumes:
+      - simpan-data:/data
+    restart: unless-stopped
+
+volumes:
+  simpan-data:

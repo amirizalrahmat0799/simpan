@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and unit/integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - run: mvn -B -ntp verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simpan-jar
+          path: target/simpan.jar
+
+  compatibility:
+    name: Real S3 clients (boto3, aws cli, rclone) and crash test
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      SIMPAN_ACCESS_KEY: ci-access-key
+      SIMPAN_SECRET_KEY: ci-secret-key-123
+      SIMPAN_DATA_DIR: /tmp/simpan-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/download-artifact@v4
+        with:
+          name: simpan-jar
+          path: target
+      - name: Install clients
+        run: |
+          pip install --quiet boto3 "botocore[crt]" awscli
+          curl -sSL -o rclone.zip https://github.com/rclone/rclone/releases/download/v1.71.1/rclone-v1.71.1-linux-amd64.zip
+          unzip -q rclone.zip && sudo mv rclone-*/rclone /usr/local/bin/
+      - name: Start simpan
+        run: |
+          nohup java -jar target/simpan.jar > simpan.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9001/actuator/health && break; sleep 1; done
+      - name: boto3 end-to-end
+        run: python3 scripts/e2e.py
+      - name: aws cli
+        env:
+          AWS_ACCESS_KEY_ID: ci-access-key
+          AWS_SECRET_ACCESS_KEY: ci-secret-key-123
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          E="--endpoint-url http://127.0.0.1:9000"
+          aws $E s3 mb s3://cli-test
+          head -c 30000000 /dev/urandom > big.bin
+          aws $E s3 cp --no-progress big.bin s3://cli-test/big.bin
+          aws $E s3 cp --no-progress s3://cli-test/big.bin back.bin
+          cmp big.bin back.bin
+          aws $E s3 sync --no-progress scripts s3://cli-test/scripts
+          aws $E s3 ls s3://cli-test --recursive
+          aws $E s3 rb s3://cli-test --force
+      - name: rclone
+        run: scripts/rclone-e2e.sh
+      - name: Crash test (SIGKILL during writes)
+        run: |
+          pkill -f simpan.jar || true
+          SIMPAN_DATA_DIR=/tmp/crash-data python3 scripts/crash-test.py "exec java -jar target/simpan.jar"
+      - name: Server log
+        if: always()
+        run: tail -n 200 simpan.log
