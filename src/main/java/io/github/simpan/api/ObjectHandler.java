@@ -94,7 +94,7 @@ final class ObjectHandler {
         Http.objectHeaders(res, m);
         for (Map.Entry<String, String> o : RESPONSE_OVERRIDES.entrySet()) {
             String v = req.param(o.getKey());
-            if (v != null) res.setHeader(o.getValue(), v);
+            if (v != null) Http.header(res, o.getValue(), v);
         }
         if ("ENABLED".equalsIgnoreCase(req.header("x-amz-checksum-mode")) && (!partial || partNumber != null && m.partsCount() == 0)) {
             checksumHeaders(res, m);

@@ -13,6 +13,7 @@ import zlib
 from datetime import datetime, timezone
 
 import boto3
+import botocore
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -43,6 +44,15 @@ def error_code(fn, *args, **kwargs):
     return None, 200
 
 
+def has_param(operation, param):
+    """Older botocore releases predate some S3 features (conditional writes, checksum types); skip those."""
+    return param in s3.meta.service_model.operation_model(operation).input_shape.members
+
+
+def skip(name):
+    print(f"skip  {name} (needs a newer botocore than {botocore.__version__})")
+
+
 def b64(data):
     return base64.b64encode(data).decode()
 
@@ -60,15 +70,16 @@ check("missing bucket", error_code(s3.head_bucket, Bucket="no-such-bucket-xyz")[
 
 # ---------------------------------------------------------------- objects
 body = b"Selamat datang ke simpan!\n" * 100
-put = s3.put_object(Bucket=bucket, Key="docs/welcome.txt", Body=body, ContentType="text/plain",
+put = s3.put_object(Bucket=bucket, Key="docs/welcome.txt", Body=body, ContentType="text/plain; charset=utf-8",
                     Metadata={"author": "mizal"}, CacheControl="max-age=60")
 check("put etag is md5", put["ETag"].strip('"') == hashlib.md5(body).hexdigest())
 got = s3.get_object(Bucket=bucket, Key="docs/welcome.txt", ChecksumMode="ENABLED")
 check("get body", got["Body"].read() == body)
-check("content type", got["ContentType"] == "text/plain")
+check("content type byte for byte", got["ContentType"] == "text/plain; charset=utf-8")
 check("user metadata", got["Metadata"] == {"author": "mizal"})
 check("cache control", got["CacheControl"] == "max-age=60")
-check("checksum returned", any(k.startswith("Checksum") and k != "ChecksumType" for k in got))
+check("checksum returned", any(h.startswith("x-amz-checksum-") and h != "x-amz-checksum-type"
+                              for h in got["ResponseMetadata"]["HTTPHeaders"]))
 
 crc = zlib.crc32(body).to_bytes(4, "big")
 s3.put_object(Bucket=bucket, Key="crc.txt", Body=body, ChecksumCRC32=b64(crc))
@@ -80,8 +91,11 @@ check("wrong md5 rejected", error_code(s3.put_object, Bucket=bucket, Key="bad.tx
 s3.put_object(Bucket=bucket, Key="sha.bin", Body=body, ChecksumAlgorithm="SHA256")
 check("sha256 checksum", s3.head_object(Bucket=bucket, Key="sha.bin", ChecksumMode="ENABLED")["ChecksumSHA256"]
       == b64(hashlib.sha256(body).digest()))
-s3.put_object(Bucket=bucket, Key="nvme.bin", Body=body, ChecksumAlgorithm="CRC64NVME")
-check("crc64nvme checksum", "ChecksumCRC64NVME" in s3.head_object(Bucket=bucket, Key="nvme.bin", ChecksumMode="ENABLED"))
+if "CRC64NVME" in s3.meta.service_model.operation_model("PutObject").input_shape.members["ChecksumAlgorithm"].enum:
+    s3.put_object(Bucket=bucket, Key="nvme.bin", Body=body, ChecksumAlgorithm="CRC64NVME")
+    check("crc64nvme checksum", "ChecksumCRC64NVME" in s3.head_object(Bucket=bucket, Key="nvme.bin", ChecksumMode="ENABLED"))
+else:  # botocore older than 1.36 predates CRC64NVME
+    s3.put_object(Bucket=bucket, Key="nvme.bin", Body=body)
 s3.put_object(Bucket=bucket, Key="empty", Body=b"")
 check("empty object", s3.get_object(Bucket=bucket, Key="empty")["Body"].read() == b"")
 check("missing key", error_code(s3.get_object, Bucket=bucket, Key="nope")[0] == "NoSuchKey")
@@ -98,12 +112,16 @@ check("if-none-match 304", error_code(s3.get_object, Bucket=bucket, Key="docs/we
 check("if-match 412", error_code(s3.get_object, Bucket=bucket, Key="docs/welcome.txt", IfMatch='"0000"')[1] == 412)
 check("if-modified-since 304", error_code(s3.get_object, Bucket=bucket, Key="docs/welcome.txt",
                                           IfModifiedSince=datetime.now(timezone.utc))[1] == 304)
-check("conditional create", error_code(s3.put_object, Bucket=bucket, Key="docs/welcome.txt", Body=b"x",
-                                       IfNoneMatch="*")[0] == "PreconditionFailed")
-s3.put_object(Bucket=bucket, Key="new-only.txt", Body=b"first", IfNoneMatch="*")
-check("conditional create of a new key", s3.get_object(Bucket=bucket, Key="new-only.txt")["Body"].read() == b"first")
-check("if-match write mismatch", error_code(s3.put_object, Bucket=bucket, Key="new-only.txt", Body=b"x",
-                                            IfMatch='"0000"')[0] == "PreconditionFailed")
+if has_param("PutObject", "IfNoneMatch") and has_param("PutObject", "IfMatch"):
+    check("conditional create", error_code(s3.put_object, Bucket=bucket, Key="docs/welcome.txt", Body=b"x",
+                                           IfNoneMatch="*")[0] == "PreconditionFailed")
+    s3.put_object(Bucket=bucket, Key="new-only.txt", Body=b"first", IfNoneMatch="*")
+    check("conditional create of a new key", s3.get_object(Bucket=bucket, Key="new-only.txt")["Body"].read() == b"first")
+    check("if-match write mismatch", error_code(s3.put_object, Bucket=bucket, Key="new-only.txt", Body=b"x",
+                                                IfMatch='"0000"')[0] == "PreconditionFailed")
+else:
+    skip("conditional writes")
+    s3.put_object(Bucket=bucket, Key="new-only.txt", Body=b"first")
 
 # ---------------------------------------------------------------- listing
 keys = [f"photos/2026/{i:02d}.jpg" for i in range(12)] + [f"photos/2025/{i:02d}.jpg" for i in range(3)]
@@ -153,7 +171,10 @@ check("batch delete", len(res["Deleted"]) == 2 and error_code(s3.head_object, Bu
 
 # ---------------------------------------------------------------- multipart
 data = os.urandom(13 * MiB)
-for algorithm in ("SHA256", "CRC32C", "CRC64NVME"):
+algorithms = ["SHA256", "CRC32C"]
+if "CRC64NVME" in s3.meta.service_model.operation_model("PutObject").input_shape.members["ChecksumAlgorithm"].enum:
+    algorithms.append("CRC64NVME")
+for algorithm in algorithms:
     key = f"mp-{algorithm}.bin"
     up = s3.create_multipart_upload(Bucket=bucket, Key=key, ChecksumAlgorithm=algorithm, ContentType="video/mp4")
     parts = []
@@ -175,16 +196,21 @@ for algorithm in ("SHA256", "CRC32C", "CRC64NVME"):
     check(f"multipart checksum {algorithm}", head[f"Checksum{algorithm}"] and head["ContentType"] == "video/mp4")
 
 # full-object CRC32 must equal the CRC32 of the whole object
-up = s3.create_multipart_upload(Bucket=bucket, Key="full-crc.bin", ChecksumAlgorithm="CRC32", ChecksumType="FULL_OBJECT")
-parts = []
-for n, off in enumerate(range(0, len(data), 5 * MiB), start=1):
-    p = s3.upload_part(Bucket=bucket, Key="full-crc.bin", UploadId=up["UploadId"], PartNumber=n,
-                       Body=data[off:off + 5 * MiB], ChecksumAlgorithm="CRC32")
-    parts.append({"PartNumber": n, "ETag": p["ETag"]})
-s3.complete_multipart_upload(Bucket=bucket, Key="full-crc.bin", UploadId=up["UploadId"], MultipartUpload={"Parts": parts})
-head = s3.head_object(Bucket=bucket, Key="full-crc.bin", ChecksumMode="ENABLED")
-check("full-object crc32 combine", head["ChecksumCRC32"] == b64(zlib.crc32(data).to_bytes(4, "big"))
-      and head["ChecksumType"] == "FULL_OBJECT")
+if has_param("CreateMultipartUpload", "ChecksumType"):
+    up = s3.create_multipart_upload(Bucket=bucket, Key="full-crc.bin", ChecksumAlgorithm="CRC32",
+                                    ChecksumType="FULL_OBJECT")
+    parts = []
+    for n, off in enumerate(range(0, len(data), 5 * MiB), start=1):
+        p = s3.upload_part(Bucket=bucket, Key="full-crc.bin", UploadId=up["UploadId"], PartNumber=n,
+                           Body=data[off:off + 5 * MiB], ChecksumAlgorithm="CRC32")
+        parts.append({"PartNumber": n, "ETag": p["ETag"]})
+    s3.complete_multipart_upload(Bucket=bucket, Key="full-crc.bin", UploadId=up["UploadId"],
+                                 MultipartUpload={"Parts": parts})
+    head = s3.head_object(Bucket=bucket, Key="full-crc.bin", ChecksumMode="ENABLED")
+    check("full-object crc32 combine", head["ChecksumCRC32"] == b64(zlib.crc32(data).to_bytes(4, "big"))
+          and head["ChecksumType"] == "FULL_OBJECT")
+else:
+    skip("full-object multipart checksums")
 
 up = s3.create_multipart_upload(Bucket=bucket, Key="small.bin")
 p1 = s3.upload_part(Bucket=bucket, Key="small.bin", UploadId=up["UploadId"], PartNumber=1, Body=b"tiny")
@@ -252,4 +278,4 @@ for page in paginator.paginate(Bucket=bucket):
         s3.delete_objects(Bucket=bucket, Delete={"Objects": objs, "Quiet": True})
 s3.delete_bucket(Bucket=bucket)
 check("delete bucket", error_code(s3.head_bucket, Bucket=bucket)[1] == 404)
-print(f"\nAll {passed} checks passed against {ENDPOINT} (boto3 {boto3.__version__})")
+print(f"\nAll {passed} checks passed against {ENDPOINT} (boto3 {boto3.__version__}, botocore {botocore.__version__})")

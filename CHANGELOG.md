@@ -16,4 +16,11 @@ All notable changes to this project are documented here. The format follows
 - Storage engine: immutable blobs with atomic renames, CRC-protected metadata journal with snapshots and compaction,
   crash recovery, orphan cleanup, multipart uploads that survive restarts.
 - Prometheus metrics, health probes, Dockerfile and Compose file.
-- Compatibility tests with boto3, the AWS CLI and rclone, and a SIGKILL crash test, run in CI.
+- Compatibility tests with boto3 (current and 1.34), the AWS CLI and rclone, and a SIGKILL crash test, run in CI.
+
+### Fixed
+
+- Uploads from botocore releases before mid-2025 (boto3, AWS CLI v1) failed with "Connection was closed": Tomcat
+  answers `Expect: 100-continue` without a reason phrase, which they cannot parse. The server now runs on Jetty.
+- Header values now reach signature checks and GET responses exactly as sent (Jetty normalised
+  `charset=utf-8` to `charset=UTF-8`, which broke signatures from rclone and the Go SDK).

@@ -43,17 +43,25 @@ jobs:
         with:
           name: simpan-jar
           path: target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install clients
         run: |
-          pip install --quiet boto3 "botocore[crt]" awscli
+          # current boto3 and AWS CLI, plus boto3 1.34 (what Ubuntu 24.04 ships) to keep older clients working
+          python -m venv .venv && .venv/bin/pip install --quiet boto3 "botocore[crt]" awscli
+          python -m venv .venv-old && .venv-old/bin/pip install --quiet "boto3==1.34.46" "botocore[crt]==1.34.46"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           curl -sSL -o rclone.zip https://github.com/rclone/rclone/releases/download/v1.71.1/rclone-v1.71.1-linux-amd64.zip
           unzip -q rclone.zip && sudo mv rclone-*/rclone /usr/local/bin/
       - name: Start simpan
         run: |
           nohup java -jar target/simpan.jar > simpan.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:9001/actuator/health && break; sleep 1; done
-      - name: boto3 end-to-end
-        run: python3 scripts/e2e.py
+      - name: boto3 end-to-end (current)
+        run: .venv/bin/python scripts/e2e.py
+      - name: boto3 end-to-end (1.34, older clients)
+        run: .venv-old/bin/python scripts/e2e.py
       - name: aws cli
         env:
           AWS_ACCESS_KEY_ID: ci-access-key
@@ -74,7 +82,7 @@ jobs:
       - name: Crash test (SIGKILL during writes)
         run: |
           pkill -f simpan.jar || true
-          SIMPAN_DATA_DIR=/tmp/crash-data python3 scripts/crash-test.py "exec java -jar target/simpan.jar"
+          SIMPAN_DATA_DIR=/tmp/crash-data .venv/bin/python scripts/crash-test.py "exec java -jar target/simpan.jar"
       - name: Server log
         if: always()
         run: tail -n 200 simpan.log

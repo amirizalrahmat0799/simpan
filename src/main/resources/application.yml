@@ -1,9 +1,8 @@
 server:
   port: ${SIMPAN_PORT:9000}
   max-http-request-header-size: 16KB
-  tomcat:
-    max-swallow-size: -1
-    connection-timeout: 60s
+  jetty:
+    connection-idle-timeout: 60s
 
 spring:
   application:

@@ -2,6 +2,8 @@ package io.github.simpan.api;
 
 import io.github.simpan.storage.ObjectMeta;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse;
+import org.eclipse.jetty.http.HttpHeader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -75,11 +77,27 @@ final class Http {
         res.setHeader("Accept-Ranges", "bytes");
         for (String h : CONTENT_HEADERS) {
             String v = m.headers().get(h);
-            if (v != null) res.setHeader(h, v);
+            if (v != null) header(res, h, v);
         }
-        if (!m.headers().containsKey("Content-Type")) res.setHeader("Content-Type", "binary/octet-stream");
+        if (!m.headers().containsKey("Content-Type")) header(res, "Content-Type", "binary/octet-stream");
         for (Map.Entry<String, String> e : m.userMetadata().entrySet()) res.setHeader("x-amz-meta-" + e.getKey(), e.getValue());
         if (m.partsCount() > 0) res.setHeader("x-amz-mp-parts-count", String.valueOf(m.partsCount()));
+    }
+
+    /**
+     * Sets a response header exactly as stored. Content-Type goes straight into Jetty's header fields: the servlet
+     * API would parse and re-render it ("text/plain; charset=utf-8" became "text/plain;charset=utf-8"), and S3
+     * returns the value the uploader sent, byte for byte.
+     */
+    static void header(HttpServletResponse res, String name, String value) {
+        if (name.equalsIgnoreCase("Content-Type")) {
+            ServletContextResponse jetty = ServletContextResponse.getServletContextResponse(res);
+            if (jetty != null) {
+                jetty.getWrapped().getHeaders().put(HttpHeader.CONTENT_TYPE, value);
+                return;
+            }
+        }
+        res.setHeader(name, value);
     }
 
     static String quote(String etag) {

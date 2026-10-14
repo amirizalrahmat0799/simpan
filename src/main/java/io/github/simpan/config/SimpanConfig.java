@@ -7,9 +7,12 @@ import io.github.simpan.metrics.S3Metrics;
 import io.github.simpan.storage.Storage;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
-import org.apache.catalina.connector.Connector;
+import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
+import org.eclipse.jetty.http.UriCompliance;
+import org.eclipse.jetty.server.Connector;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.embedded.jetty.JettyServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -65,18 +68,29 @@ public class SimpanConfig {
     }
 
     /**
-     * S3 object keys can contain characters Tomcat rejects by default in URLs (encoded slashes, brackets, pipes),
-     * and uploads can be large, so relax those limits on the S3 connector.
+     * Jetty rather than Tomcat: Tomcat answers "Expect: 100-continue" with a status line that has no reason phrase
+     * ("HTTP/1.1 100"), which botocore releases before mid-2025 (boto3, the AWS CLI v1) cannot parse, so every
+     * upload from them failed. Jetty sends "HTTP/1.1 100 Continue".
+     *
+     * <p>S3 object keys can also contain sequences Jetty rejects by default as ambiguous ("%2F", "//", ";"); the
+     * S3 servlet reads the raw request URI itself, so those checks are relaxed. Header values must reach the
+     * signature check exactly as the client sent them.
      */
     @Bean
-    WebServerFactoryCustomizer<TomcatServletWebServerFactory> s3Tomcat() {
-        return factory -> factory.addConnectorCustomizers((Connector c) -> {
-            c.setEncodedSolidusHandling("passthrough");
-            c.setAllowBackslash(true);
-            c.setProperty("relaxedPathChars", "[]|{}^\\`\"<>");
-            c.setProperty("relaxedQueryChars", "[]|{}^\\`\"<>");
-            c.setMaxPostSize(-1);
-            c.setProperty("maxSwallowSize", "-1");
+    WebServerFactoryCustomizer<JettyServletWebServerFactory> s3Jetty() {
+        return factory -> factory.addServerCustomizers(server -> {
+            for (Connector connector : server.getConnectors()) {
+                HttpConnectionFactory http = connector.getConnectionFactory(HttpConnectionFactory.class);
+                if (http != null) {
+                    http.getHttpConfiguration().setUriCompliance(UriCompliance.UNSAFE);
+                    // Jetty's header cache matches common values case-insensitively and hands back its own
+                    // spelling ("charset=UTF-8" for "charset=utf-8"). Signatures cover exact header bytes.
+                    http.getHttpConfiguration().setHeaderCacheCaseSensitive(true);
+                }
+            }
+            for (ServletContextHandler context : server.getDescendants(ServletContextHandler.class)) {
+                context.getServletHandler().setDecodeAmbiguousURIs(true);
+            }
         });
     }
 }

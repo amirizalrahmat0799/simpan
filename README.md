@@ -75,6 +75,9 @@ tagging, static website hosting, replication, SigV4A, browser POST uploads. Requ
 - **Real clients in CI**, on every push:
   - boto3 (the AWS SDK for Python): 71 checks, over plain HTTP and HTTPS. HTTPS matters because that is when the
     SDK switches to `aws-chunked` bodies with trailing CRC32 checksums.
+  - boto3 1.34, the version Ubuntu 24.04 ships, to keep older clients working. (This is why simpan runs on Jetty
+    rather than Tomcat: Tomcat's reply to `Expect: 100-continue` has no reason phrase, which botocore releases
+    before mid-2025 cannot parse.)
   - The AWS CLI: `cp` (multipart upload and ranged download), `sync`, S3-to-S3 copy, and `rb --force`.
   - rclone: sync a tree that includes a 24 MiB file, keys with spaces, `+` and emoji, then check every byte both ways.
 - **Crash test**: eight writers upload in parallel, the server is killed with `SIGKILL`, and it is restarted. Every
