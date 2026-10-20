@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-20
+
 ### Added
 
 - S3 API on Spring Boot 3.5 and Java 21: buckets, objects, ListObjects V1/V2, CopyObject, DeleteObjects, multipart

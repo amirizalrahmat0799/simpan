@@ -15,19 +15,23 @@ Self-hosted S3 matters more since MinIO's community edition stopped publishing b
 and moved to maintenance mode. simpan is a small, readable alternative for development, CI, home labs and
 single-node deployments.
 
-> **Status: 0.1.0-SNAPSHOT.** Single node, single tenant. Not a replacement for a replicated production cluster.
+> **Status: 0.1.0.** Single node, single tenant. Not a replacement for a replicated production cluster.
 
 ## Quick start
 
+With Docker, from the published image:
+
 ```bash
-docker compose up -d            # S3 API on :9000, health and metrics on :9001
+docker run -d --name simpan -p 9000:9000 -p 9001:9001 -v simpan-data:/data \
+  -e SIMPAN_ACCESS_KEY=admin -e SIMPAN_SECRET_KEY=change-me-please \
+  ghcr.io/amirizalrahmat0799/simpan:latest     # S3 API on :9000, health and metrics on :9001
 ```
 
-or without Docker (Java 21):
+or from this repository with `docker compose up -d`, or with Java 21 and the jar from
+[Releases](https://github.com/amirizalrahmat0799/simpan/releases):
 
 ```bash
-mvn package
-SIMPAN_ACCESS_KEY=admin SIMPAN_SECRET_KEY=change-me-please java -jar target/simpan.jar
+SIMPAN_ACCESS_KEY=admin SIMPAN_SECRET_KEY=change-me-please java -jar simpan-0.1.0.jar
 ```
 
 Then use it like S3:
